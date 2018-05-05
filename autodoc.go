@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -22,14 +24,23 @@ var (
 	endJSblock        = "```"
 )
 
-type docOp struct {
+type docData struct {
 	title    string
 	sections []*docSec
 	indexes  []string
+	err      error
+}
+
+type docReader struct {
+	docData
 	*bufio.Reader
-	io.Writer
 	line []byte
-	err  error
+}
+
+type docWriter struct {
+	docData
+	io.Writer
+	n int64
 }
 
 type docSec struct {
@@ -45,11 +56,12 @@ func (sec *docSec) write(b []byte) {
 	sec.writeString(string(b))
 }
 
-func Document(title string, in io.Reader, out io.Writer) error {
-	op := &docOp{
-		title:  title,
+func Document(title string, in io.Reader) (io.WriterTo, error) {
+	op := &docReader{
+		docData: docData{
+			title: title,
+		},
 		Reader: bufio.NewReader(in),
-		Writer: out,
 	}
 	for op.readline() == nil {
 		if sig := signatureRe.FindSubmatch(op.line); len(sig) == 2 {
@@ -59,14 +71,26 @@ func Document(title string, in io.Reader, out io.Writer) error {
 	if op.err == io.EOF {
 		op.err = nil
 	}
+	if len(op.sections) == 0 {
+		return nil, nil
+	}
 
 	op.index()
-	op.writeAll()
+	if op.err != nil {
+		return nil, op.err
+	}
 
-	return op.err
+	return &docWriter{
+		docData: op.docData,
+	}, nil
 }
 
-func (op *docOp) readline() error {
+func (op *docWriter) WriteTo(w io.Writer) (int64, error) {
+	op.Writer = w
+	return op.writeAll()
+}
+
+func (op *docReader) readline() error {
 	if op.err != nil {
 		return op.err
 	}
@@ -74,7 +98,7 @@ func (op *docOp) readline() error {
 	return op.err
 }
 
-func (op *docOp) getSec(signature [][]byte) {
+func (op *docReader) getSec(signature [][]byte) {
 	sec := &docSec{
 		header: string(getHeader.Find(signature[1])),
 		text: []string{
@@ -105,7 +129,7 @@ func (op *docOp) getSec(signature [][]byte) {
 			continue
 		}
 
-		if example := startExample.FindSubmatch(op.line); len(example) == 2 {
+		if startExample.Match(op.line) {
 			op.getExample(sec)
 			continue
 		}
@@ -120,7 +144,7 @@ func (op *docOp) getSec(signature [][]byte) {
 	op.sections = append(op.sections, sec)
 }
 
-func (op *docOp) getExample(sec *docSec) {
+func (op *docReader) getExample(sec *docSec) {
 	sec.writeString(startJSblock)
 	err := op.readline()
 	lws := string(leadingWhitespace.Find(op.line))
@@ -137,7 +161,7 @@ func (op *docOp) getExample(sec *docSec) {
 	sec.writeString(endJSblock)
 }
 
-func (op *docOp) index() {
+func (op *docReader) index() {
 	sort.Slice(op.sections, func(i, j int) bool {
 		return op.sections[i].header < op.sections[j].header
 	})
@@ -160,23 +184,33 @@ func (op *docOp) index() {
 
 func indentLevel(header string, indentStack []string) []string {
 	for ln := len(indentStack); ln > 0; ln = len(indentStack) {
-		if strings.HasPrefix(header, indentStack[ln-1]) {
-			break
+		// foo.bar.baz is sub-section of foo.bar
+		// but
+		// foo.barge is not a sub-section foo.bar
+		if prevHeader := indentStack[ln-1]; len(header) > len(prevHeader) && strings.HasPrefix(header, prevHeader) {
+			// check that the rune after the prevHeader prefix is a 'mark' rune
+			l := utf8.RuneCountInString(prevHeader)
+			r := ([]rune(header))[l]
+			if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+				break
+			}
 		}
 		indentStack = indentStack[:ln-1]
 	}
 	return append(indentStack, header)
 }
 
-func (op *docOp) writeString(str string) error {
+func (op *docWriter) writeString(str string) error {
 	if op.err != nil {
 		return op.err
 	}
-	_, op.err = op.Write([]byte(str))
+	n, err := op.Write([]byte(str))
+	op.err = err
+	op.n += int64(n)
 	return op.err
 }
 
-func (op *docOp) writeAll() {
+func (op *docWriter) writeAll() (int64, error) {
 	op.writeString("## ")
 	op.writeString(op.title)
 	op.writeString(topAnchor)
@@ -190,4 +224,5 @@ func (op *docOp) writeAll() {
 		op.writeString("\n")
 		op.writeString(strings.Join(sec.text, "\n"))
 	}
+	return op.n, op.err
 }

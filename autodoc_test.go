@@ -22,17 +22,18 @@ var (
 // Note that all three values are required.
 /* >
   var triplets = [
-  	[1,2,3],
-  	[3,1,4]
+    [1,2,3],
+    [3,1,4]
   ];
   var i,a,b,c;
   for (i=0; i<triplets.length;i++){
-  	a = triplets[0];
-  	b = triplets[1];
-  	c = triplets[2];
-  	console.log(sum(a,b,c));
+    a = triplets[0];
+    b = triplets[1];
+    c = triplets[2];
+    console.log(sum(a,b,c));
   }
 */
+// More comments
 function sum(a,b,c){
 	return a+b+c;
 }
@@ -49,6 +50,20 @@ sum(a,b,c)
 ~
 Sums the three values it's given.
 Note that all three values are required.
+~javascript
+var triplets = [
+  [1,2,3],
+  [3,1,4]
+];
+var i,a,b,c;
+for (i=0; i<triplets.length;i++){
+  a = triplets[0];
+  b = triplets[1];
+  c = triplets[2];
+  console.log(sum(a,b,c));
+}
+~
+More comments
 
 <sub><sup>[&uarr;Top](#__top)</sup></sub>`
 )
@@ -56,7 +71,10 @@ Note that all three values are required.
 func TestDoc(t *testing.T) {
 	in := bytes.NewBufferString(testStr)
 	out := &bytes.Buffer{}
-	assert.NoError(t, Document("test/autodoc", in, out))
+	writer, err := Document("test/autodoc", in)
+	assert.NoError(t, err)
+	assert.NotNil(t, writer)
+	writer.WriteTo(out)
 	expected := strings.Replace(testStrExpected, "~", "```", -1)
 	assert.Equal(t, expected, out.String())
 }

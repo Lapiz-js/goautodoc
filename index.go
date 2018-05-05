@@ -19,16 +19,24 @@ func DocumentDirectories(title, docPath string, baseDirs ...string) error {
 	}
 	for _, dir := range baseDirs {
 		base := filepath.Base(dir)
-		rootDoc.dirs = append(rootDoc.dirs, base)
-		err := indexDir(title+"/"+base, filepath.Join(docPath, base), dir)
+		ok, err := indexDir(title+"/"+base, filepath.Join(docPath, base), dir)
 		if err != nil {
 			return err
 		}
+		if ok {
+			rootDoc.dirs = append(rootDoc.dirs, base)
+		}
 	}
 
-	err := os.MkdirAll(docPath, 0777)
+	ok, err := exists(docPath)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		err := os.MkdirAll(docPath, 0777)
+		if err != nil {
+			return err
+		}
 	}
 	f, err := os.Create(filepath.Join(docPath, "index.md"))
 	if err != nil {
@@ -39,70 +47,103 @@ func DocumentDirectories(title, docPath string, baseDirs ...string) error {
 	return f.Close()
 }
 
-func indexDir(title, docDir, codeDir string) error {
+func indexDir(title, docDir, codeDir string) (bool, error) {
 	idx := &indexDoc{
 		title: title,
 	}
 
 	f, err := os.Open(codeDir)
 	if err != nil {
-		return err
+		return false, err
 	}
 	list, err := f.Readdir(-1)
 	if err != nil {
-		return err
+		return false, err
 	}
 	err = f.Close()
 	if err != nil {
-		return err
+		return false, err
 	}
 
+	var dirs []string
 	for _, f := range list {
 		name := f.Name()
 		if f.IsDir() && name != "tests" {
-			idx.dirs = append(idx.dirs, name)
+			dirs = append(dirs, name)
 		} else if strings.HasSuffix(name, ".js") {
-			err = os.MkdirAll(docDir, 0777)
+			ok, err := documentFile(title, name, docDir, codeDir)
 			if err != nil {
-				return err
+				return false, err
 			}
-			out, err := os.Create(filepath.Join(docDir, name+".md"))
-			if err != nil {
-				return err
+			if ok {
+				idx.files = append(idx.files, name)
 			}
-			in, err := os.Open(filepath.Join(codeDir, name))
-			if err != nil {
-				out.Close()
-				return err
-			}
-			err = Document(title+"/"+name, in, out)
-			if err != nil {
-				return err
-			}
-			out.Close()
-			in.Close()
-			idx.files = append(idx.files, name)
 		}
 	}
 
-	for _, sub := range idx.dirs {
-		err := indexDir(title+"/"+sub, filepath.Join(docDir, sub), filepath.Join(codeDir, sub))
+	for _, dir := range dirs {
+		ok, err := indexDir(title+"/"+dir, filepath.Join(docDir, dir), filepath.Join(codeDir, dir))
 		if err != nil {
-			return err
+			return false, err
+		}
+		if ok {
+			idx.dirs = append(idx.dirs, dir)
 		}
 	}
 
-	err = os.MkdirAll(docDir, 0777)
+	if len(idx.files) == 0 && len(idx.dirs) == 0 {
+		return false, nil
+	}
+
+	ok, err := exists(docDir)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if !ok {
+		err = os.MkdirAll(docDir, 0777)
+		if err != nil {
+			return false, err
+		}
 	}
 	f, err = os.Create(filepath.Join(docDir, "index.md"))
 	if err != nil {
-		return err
+		return false, err
 	}
 	idx.Writer = f
 	idx.writeAll()
-	return f.Close()
+	return true, f.Close()
+}
+
+func documentFile(title, name, docDir, codeDir string) (bool, error) {
+	in, err := os.Open(filepath.Join(codeDir, name))
+	if err != nil {
+		return false, err
+	}
+	defer in.Close()
+
+	writer, err := Document(title+"/"+name, in)
+	if err != nil || writer == nil {
+		return false, err
+	}
+
+	ok, err := exists(docDir)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		err = os.MkdirAll(docDir, 0777)
+		if err != nil {
+			return false, err
+		}
+	}
+	out, err := os.Create(filepath.Join(docDir, name+".md"))
+	if err != nil {
+		return false, err
+	}
+	defer out.Close()
+
+	_, err = writer.WriteTo(out)
+	return true, err
 }
 
 type indexDoc struct {
@@ -145,4 +186,15 @@ func (i *indexDoc) writeAll() {
 		i.write(file)
 		i.write(".md)")
 	}
+}
+
+func exists(dir string) (bool, error) {
+	_, err := os.Stat(dir)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
